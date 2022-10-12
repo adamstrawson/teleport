@@ -18,6 +18,7 @@ package resources
 
 import (
 	"context"
+	"encoding/json"
 	"math/rand"
 	"path/filepath"
 	"testing"
@@ -25,8 +26,10 @@ import (
 
 	"github.com/gravitational/teleport/api/breaker"
 	"github.com/gravitational/teleport/api/identityfile"
+	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/auth/authclient"
+	"github.com/gravitational/teleport/lib/modules"
 	"github.com/gravitational/teleport/lib/service"
 	"github.com/gravitational/teleport/lib/utils"
 
@@ -44,10 +47,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/integration/helpers"
 	resourcesv2 "github.com/gravitational/teleport/operator/apis/resources/v2"
+	resourcesv3 "github.com/gravitational/teleport/operator/apis/resources/v3"
 	resourcesv5 "github.com/gravitational/teleport/operator/apis/resources/v5"
+	"github.com/gravitational/trace"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -80,6 +84,14 @@ func clientForTeleport(t *testing.T, teleportServer *helpers.TeleInstance, userN
 }
 
 func defaultTeleportServiceConfig(t *testing.T) (*helpers.TeleInstance, string) {
+	modules.SetTestModules(t, &modules.TestModules{
+		TestBuildType: modules.BuildEnterprise,
+		TestFeatures: modules.Features{
+			OIDC: true,
+			SAML: true,
+		},
+	})
+
 	teleportServer := helpers.NewInstance(t, helpers.InstanceConfig{
 		ClusterName: "root.example.com",
 		HostID:      uuid.New().String(),
@@ -102,6 +114,7 @@ func defaultTeleportServiceConfig(t *testing.T) (*helpers.TeleInstance, string) 
 			Rules: []types.Rule{
 				types.NewRule("role", unrestricted),
 				types.NewRule("user", unrestricted),
+				types.NewRule("auth_connector", unrestricted),
 			},
 		},
 	})
@@ -146,6 +159,15 @@ func (s *testSetup) startKubernetesOperator(t *testing.T) {
 		Scheme:                 k8sManager.GetScheme(),
 		TeleportClientAccessor: clientAccessor,
 	}).SetupWithManager(k8sManager)
+	require.NoError(t, err)
+
+	err = NewGithubConnectorReconciler(s.k8sClient, clientAccessor).SetupWithManager(k8sManager)
+	require.NoError(t, err)
+
+	err = NewOIDCConnectorReconciler(s.k8sClient, clientAccessor).SetupWithManager(k8sManager)
+	require.NoError(t, err)
+
+	err = NewSAMLConnectorReconciler(s.k8sClient, clientAccessor).SetupWithManager(k8sManager)
 	require.NoError(t, err)
 
 	ctx, ctxCancel := context.WithCancel(context.Background())
@@ -229,6 +251,9 @@ func setupTestEnv(t *testing.T) *testSetup {
 	err = resourcesv2.AddToScheme(scheme.Scheme)
 	require.NoError(t, err)
 
+	err = resourcesv3.AddToScheme(scheme.Scheme)
+	require.NoError(t, err)
+
 	k8sClient, err := kclient.New(cfg, kclient.Options{Scheme: scheme.Scheme})
 	require.NoError(t, err)
 	require.NotNil(t, k8sClient)
@@ -259,18 +284,26 @@ func setupTestEnv(t *testing.T) *testSetup {
 	return setup
 }
 
-func teleportCreateDummyRole(ctx context.Context, t *testing.T, roleName string, tClient auth.ClientI) {
+func teleportCreateDummyRole(ctx context.Context, roleName string, tClient auth.ClientI) error {
 	// The role is created in Teleport
 	tRole, err := types.NewRole(roleName, types.RoleSpecV5{
 		Allow: types.RoleConditions{
 			Logins: []string{"a", "b"},
 		},
 	})
-	require.NoError(t, err)
+	if err != nil {
+		return trace.Wrap(err)
+	}
 	metadata := tRole.GetMetadata()
 	metadata.Labels = map[string]string{types.OriginLabel: types.OriginKubernetes}
 	tRole.SetMetadata(metadata)
 
-	err = tClient.UpsertRole(ctx, tRole)
-	require.NoError(t, err)
+	return trace.Wrap(tClient.UpsertRole(ctx, tRole))
+}
+
+func teleportResourceToMap[T types.Resource](resource T) (map[string]interface{}, error) {
+	resourceJSON, _ := json.Marshal(resource)
+	resourceMap := make(map[string]interface{})
+	err := json.Unmarshal(resourceJSON, &resourceMap)
+	return resourceMap, trace.Wrap(err)
 }
