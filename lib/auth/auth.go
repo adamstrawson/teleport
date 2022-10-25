@@ -205,7 +205,7 @@ func NewServer(cfg *InitConfig, opts ...ServerOption) (*Server, error) {
 
 	services := &Services{
 		Trust:                 cfg.Trust,
-		Presence:              cfg.Presence,
+		PresenceInternal:      cfg.Presence,
 		Provisioner:           cfg.Provisioner,
 		Identity:              cfg.Identity,
 		Access:                cfg.Access,
@@ -267,7 +267,7 @@ func NewServer(cfg *InitConfig, opts ...ServerOption) (*Server, error) {
 
 type Services struct {
 	services.Trust
-	services.Presence
+	services.PresenceInternal
 	services.Provisioner
 	services.Identity
 	services.Access

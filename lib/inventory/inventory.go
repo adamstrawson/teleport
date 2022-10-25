@@ -25,6 +25,7 @@ import (
 	"github.com/gravitational/teleport/api/client/proto"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/utils"
+	vc "github.com/gravitational/teleport/lib/versioncontrol"
 
 	"github.com/gravitational/trace"
 	log "github.com/sirupsen/logrus"
@@ -263,6 +264,118 @@ type UpstreamHandle interface {
 	// HasService is a helper for checking if a given service is associated with this
 	// stream.
 	HasService(types.SystemRole) bool
+
+	// StateTracker gets the instance state tracker.
+	//
+	// NOTE: The returnd state tracker is *not* locked, and must be locked prior to any
+	// access other than via the provided locking methods.
+	StateTracker() *InstanceStateTracker
+}
+
+// InstanceStateTracker tracks the state of a connected instance from the point of view of
+// the inventory controller. Values in this struct tend to be lazily updated/consumed. For
+// example, the LastHeartbeat value is nil until the first attempt to heartbeat the instance
+// has been made *for this TCP connection*, meaning that you can't distinguish between an instance
+// that just joined the cluster from one that just reconnected by looking at this struct. Similarly,
+// when using this struct to inject control log entries, those entries aren't updated until the next
+// "tick" of the background handler goroutine, which may be up to a minute in the future. This laziness
+// of operation is how we ensure that the inventory system can scale to handle many thousands of
+// concurrent instances without producing undue load, but it may be confusing to work with initially.
+type InstanceStateTracker struct {
+	// MU protects all below fields and must be locked during access of any of the
+	// below fields.
+	MU sync.Mutex
+
+	// HeartbeatAfter is the time after which the next heartbeat attempt will be made.
+	// This field can be set to time.Now() to force a heartbeat on next tick. It should
+	// not be set in the past or zeroed (may cause overwrite).
+	HeartbeatAfter time.Time
+
+	// QualifiedPendingControlLog encodes sensitive control log entries that should be written to the backend
+	// on the next heartbeat. Appending a value to this field does not guarantee that it will be written. The
+	// qualified pending control log is reset if a concurrent create/write occurs. This is a deliberate design
+	// choice that is intended to force recalculation of the conditions that merited the log entry being applied
+	// if/when a concurrent update occurs. Take, for example, a log entry indicating that an upgrade will be
+	// attempted. We don't want to double-attempt an upgrade, so if the underlying resource is concurrently updated,
+	// we need to reexamine the new state before deciding if an upgrade attempt is still adviseable. This loop should
+	// continue indefinitely until we either observe that our entry was successfully written, or that the condition
+	// which originally merited the write no longer holds.
+	//
+	// NOTE: Since the lock is not held *during* an attempt to write to the backend, it is important
+	// that this log is only appended to and never reordered. The heartbeat logic relies upon the ability
+	// to trim the first N elements upon successful write in order to avoid skipping and/or double-writing
+	// a given entry. See the AppendQualifiedPendingControlLog method for an example of correct usage.
+	//
+	QualifiedPendingControlLog []types.InstanceControlLogEntry
+
+	// UnqualifiedPendingControlLog is functionally equivalent to QualifiedPendingControlLog except that it is not
+	// reset upon concurrent create/update. Appending items here is effectively "fire and forget", though items may
+	// still not make it into the control log of the underlying resource if the instance disconnects or the auth server
+	// restarts before the next successful write. As a general rule, use the QualifiedPendingControlLog to announce your
+	// intention to perform an action, and use the UnqualifiedPendingControlLog to store the results of an action.
+	//
+	// NOTE: Since the lock is not held *during* an attempt to write to the backend, it is important
+	// that this log is only appended to and never reordered. The heartbeat logic relies upon the ability
+	// to trim the first N elements upon successful write in order to avoid skipping and/or double-writing
+	// a given entry. See the AppendUnqualifiedPendingControlLog method for an example of correct usage.
+	//
+	UnqualifiedPendingControlLog []types.InstanceControlLogEntry
+
+	// LastHeartbeat is the last observed heartbeat for this instance. This field is filled lazily and
+	// will be nil if the isntance only recently connected or joined. Operations that expect to be able to
+	// observe the instance control log should skip instances for which this field is nil.
+	LastHeartbeat types.Instance
+
+	// lastRawHeartbeat is the raw backend value associated with LastHeartbeat. Used to
+	// enabled CompareAndSwap based updates.
+	lastRawHeartbeat []byte
+}
+
+// AppendQualifiedPendingControlLog appends entries to the qualified pending control log while handling correct locking
+// and heartbeat timestamp updates internally.
+func (i *InstanceStateTracker) AppendQualifiedPendingControlLog(entries ...types.InstanceControlLogEntry) {
+	i.MU.Lock()
+	defer i.MU.Unlock()
+	i.QualifiedPendingControlLog = append(i.QualifiedPendingControlLog, entries...)
+	i.HeartbeatAfter = time.Now()
+}
+
+// AppendUnqualifiedControlLog appends entries to the unqualified control log while handling correct locking
+// and heartbeat timestamp updates internally.
+func (i *InstanceStateTracker) AppendUnqualifiedControlLog(entries ...types.InstanceControlLogEntry) {
+	i.MU.Lock()
+	defer i.MU.Unlock()
+	i.UnqualifiedPendingControlLog = append(i.UnqualifiedPendingControlLog, entries...)
+	i.HeartbeatAfter = time.Now()
+}
+
+// nextHeartbeat calculates the next heartbeat value. *Must* be called only while lock is held.
+func (i *InstanceStateTracker) nextHeartbeat(now time.Time, hello proto.UpstreamInventoryHello, authID string) (types.Instance, error) {
+	instance, err := types.NewInstance(hello.ServerID, types.InstanceSpecV1{
+		Version:  vc.Normalize(hello.Version),
+		Services: hello.Services,
+		Hostname: hello.Hostname,
+		AuthID:   authID,
+		LastSeen: now.UTC(),
+	})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// preserve control log entries from previous instance if present
+	if i.LastHeartbeat != nil {
+		instance.AppendControlLog(i.LastHeartbeat.GetControlLog()...)
+	}
+
+	if len(i.QualifiedPendingControlLog) > 0 {
+		instance.AppendControlLog(i.QualifiedPendingControlLog...)
+	}
+
+	if len(i.UnqualifiedPendingControlLog) > 0 {
+		instance.AppendControlLog(i.UnqualifiedPendingControlLog...)
+	}
+
+	return instance, nil
 }
 
 type upstreamHandle struct {
@@ -270,6 +383,8 @@ type upstreamHandle struct {
 	hello proto.UpstreamInventoryHello
 
 	pingC chan pingRequest
+
+	stateTracker InstanceStateTracker
 
 	// --- fields below this point only safe for access by handler goroutine
 
@@ -289,6 +404,10 @@ type upstreamHandle struct {
 	// sshServerKeepAliveErrs is a counter used to track the number of failed keepalives
 	// with the above lease. too many failures clears the lease.
 	sshServerKeepAliveErrs int
+}
+
+func (h *upstreamHandle) StateTracker() *InstanceStateTracker {
+	return &h.stateTracker
 }
 
 func newUpstreamHandle(stream client.UpstreamInventoryControlStream, hello proto.UpstreamInventoryHello) *upstreamHandle {
