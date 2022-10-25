@@ -18,12 +18,16 @@ package kinit
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/lib/auth"
+	"github.com/gravitational/teleport/lib/srv/desktop"
 	"github.com/gravitational/trace"
 	"github.com/sirupsen/logrus"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"time"
 )
 
 /*
@@ -41,110 +45,113 @@ import (
 //	return nil
 //}
 
-const kdcExtensionsFileText = `[ kdc_cert ]
-basicConstraints=CA:FALSE
-
-# Here are some examples of the usage of nsCertType. If it is omitted
-keyUsage = nonRepudiation, digitalSignature, keyEncipherment, keyAgreement
-
-#Pkinit EKU
-extendedKeyUsage = 1.3.6.1.5.2.3.5
-
-subjectKeyIdentifier=hash
-authorityKeyIdentifier=keyid,issuer
-
-# Copy subject details
-
-issuerAltName=issuer:copy
-
-# Add id-pkinit-san (pkinit subjectAlternativeName)
-subjectAltName=otherName:1.3.6.1.5.2.2;SEQUENCE:kdc_princ_name
-
-[kdc_princ_name]
-realm = EXP:0, GeneralString:${ENV::REALM}
-principal_name = EXP:1, SEQUENCE:kdc_principal_seq
-
-[kdc_principal_seq]
-name_type = EXP:0, INTEGER:1
-name_string = EXP:1, SEQUENCE:kdc_principals
-
-[kdc_principals]
-princ1 = GeneralString:krbtgt
-princ2 = GeneralString:${ENV::REALM}
-
-[ client_cert ]
-
-# These extensions are added when 'ca' signs a request.
-
-basicConstraints=CA:FALSE
-
-keyUsage = digitalSignature, keyEncipherment, keyAgreement
-
-extendedKeyUsage =  1.3.6.1.5.2.3.4
-subjectKeyIdentifier=hash
-authorityKeyIdentifier=keyid,issuer
-
-
-subjectAltName=otherName:1.3.6.1.5.2.2;SEQUENCE:princ_name
-
-
-# Copy subject details
-
-issuerAltName=issuer:copy
-
-[princ_name]
-realm = EXP:0, GeneralString:${ENV::REALM}
-principal_name = EXP:1, SEQUENCE:principal_seq
-
-[principal_seq]
-name_type = EXP:0, INTEGER:1
-name_string = EXP:1, SEQUENCE:principals
-
-[principals]
-princ1 = GeneralString:${ENV::CLIENT}`
-
 const (
 	DefaultKRBConfig = "/etc/krb5.conf"
+	KRB5ConfigEnv    = "KRB5_CONFIG"
 )
 
 type KInit struct {
-	CACertPath   string
-	CAKeyPath    string
-	UserCertPath string
-	UserKeyPath  string
-	UserName     string
-	CacheName    string
+	AuthClient auth.ClientI
 
-	RealmName       string
+	UserName  string
+	CacheName string
+
+	RealmName string
+
 	KDCHostName     string
 	AdminServerName string
+
+	CertPath string
+	KeyPath  string
 
 	Log logrus.FieldLogger
 }
 
-func New(ca, caKey, userCert, userKey, user, cacheName, realm, kdcHost, adminServer string) *KInit {
+func New(authClient auth.ClientI, user, realm, kdcHost, adminServer string) *KInit {
 	return &KInit{
-		CACertPath:      ca,
-		CAKeyPath:       caKey,
-		UserCertPath:    userCert,
-		UserKeyPath:     userKey,
+		AuthClient:      authClient,
 		UserName:        user,
-		CacheName:       cacheName,
+		CacheName:       fmt.Sprintf("%s@%s", user, realm),
 		RealmName:       realm,
 		KDCHostName:     kdcHost,
 		AdminServerName: adminServer,
-		Log:             logrus.StandardLogger(),
+
+		CertPath: fmt.Sprintf("%s.pem", user),
+		KeyPath:  fmt.Sprintf("%s-key.pem", user),
+		Log:      logrus.StandardLogger(),
 	}
 }
 
-// CreateOrAppendCredentialsCache creates or appends to an existing credentials cache. There must be a valid KDC running
-// at the specified certificate authority address as defined in the CA Certificate
+// CreateOrAppendCredentialsCache creates or appends to an existing credentials cache.
 func (k *KInit) CreateOrAppendCredentialsCache(ctx context.Context) error {
+
+	certPath := fmt.Sprintf("%s.pem", k.UserName)
+	keyPath := fmt.Sprintf("%s-key.pem", k.UserName)
+	userCAPath := "userca.pem"
+
+	clusterName, err := k.AuthClient.GetClusterName()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	certPEM, keyPEM, err := desktop.WindowsCertKeyPEM(ctx, k.UserName, k.RealmName, time.Second*60*60, clusterName.GetClusterName(), desktop.LDAPConfig{
+		Addr:               k.KDCHostName,
+		Domain:             k.RealmName,
+		Username:           k.UserName,
+		InsecureSkipVerify: true, // TODO set to false and provide LDAP CA
+		ServerName:         k.KDCHostName,
+		CA:                 nil,
+	}, k.AuthClient)
+
+	userCA, err := k.AuthClient.GetCertAuthority(ctx, types.CertAuthID{
+		Type:       types.UserCA,
+		DomainName: clusterName.GetClusterName(),
+	}, true)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	var caCert []byte
+	keyPairs := userCA.GetActiveKeys().TLS
+	for _, keyPair := range keyPairs {
+		if keyPair.KeyType == types.PrivateKeyType_RAW {
+			caCert = keyPair.Cert
+		}
+	}
+
+	if caCert == nil {
+		return trace.Wrap(errors.New("no certificate authority was found in userCA active keys"))
+	}
+
+	// TODO remove all files
+	err = os.WriteFile(certPath, certPEM, 0644)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	err = os.WriteFile(keyPath, keyPEM, 0644)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	err = os.WriteFile(userCAPath, caCert, 0644)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	krbConfPath := fmt.Sprintf("krb_%s", k.UserName)
+	err = k.WriteKRB5Config(krbConfPath)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
 	cmd := exec.CommandContext(ctx,
 		"kinit",
-		"-X", fmt.Sprintf("X509_anchors=FILE:%s", k.CACertPath),
-		"-X", fmt.Sprintf("X509_user_identity=FILE:%s,%s", k.UserCertPath, k.UserKeyPath), k.UserName,
+		"-X", fmt.Sprintf("X509_anchors=FILE:%s", userCAPath),
+		"-X", fmt.Sprintf("X509_user_identity=FILE:%s,%s", certPath, keyPath), k.UserName,
 		"-c", k.CacheName)
+	cmd.Env = append(os.Environ(), []string{fmt.Sprintf("%s=%s", KRB5ConfigEnv, krbConfPath)}...)
+
 	data, err := cmd.CombinedOutput()
 	if err != nil {
 		return trace.Wrap(err)
@@ -152,11 +159,6 @@ func (k *KInit) CreateOrAppendCredentialsCache(ctx context.Context) error {
 	// todo better error handling from output/fully wrap libkrb5 for linux
 	k.Log.Debug(string(data))
 	return nil
-}
-
-// GenerateKDCExtensions file for openssl
-func (k *KInit) GenerateKDCExtensions(path string) error {
-	return os.WriteFile(path, []byte(kdcExtensionsFileText), 0644)
 }
 
 // krb5ConfigString returns a config suitable for a kdc
@@ -177,82 +179,4 @@ func (k *KInit) krb5ConfigString() string {
 
 func (k *KInit) WriteKRB5Config(path string) error {
 	return os.WriteFile(path, []byte(k.krb5ConfigString()), 0644)
-}
-
-// GenerateKDCCertKey generates an intermediary certificate and key pair specifically for a Kerberos Key Distribution Center
-func (k *KInit) GenerateKDCCertKey(ctx context.Context, extensionsFile, country, stateProvince, locality, orgName, unit, commonName, email, outDir string) error {
-	cmd := exec.CommandContext(ctx,
-		"openssl", "req", "-newkey", "rsa:4096", "-sha256", "-nodes",
-		"-keyout", filepath.Join(outDir, "kdckey.pem"),
-		"-out", filepath.Join(outDir, "kdcreq.pem"),
-		"-subj", fmt.Sprintf("/C=%s/ST=%s/L=%s/O=%s/OU=%s/CN=%s/emailAddress=%s", country, stateProvince, locality, orgName, unit, commonName, email))
-	data, err := cmd.CombinedOutput()
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	k.Log.Debug(string(data))
-
-	// env REALM=ALISTANIS.GITHUB.BETA.TAILSCALE.NET openssl x509 -req -in kdc.req \\n    -CAkey cakey.pem -CA cacert.pem -out kdc.pem -days 365 \\n    -extfile extensions.kdc -extensions kdc_cert -CAcreateserial
-	cmd = exec.CommandContext(ctx,
-		"openssl", "x509", "-req", "-in", filepath.Join(outDir, "kdcreq.pem"),
-		"-CAkey", k.CAKeyPath,
-		"-CA", k.CACertPath,
-		"-out", filepath.Join(outDir, "kdc.pem"),
-		"-days", "3650",
-		"-extfile", extensionsFile,
-		"-extensions", "kdc_cert",
-		"-CACreateserial",
-	)
-
-	cmd.Env = append(cmd.Env, []string{fmt.Sprintf("REALM=%s", k.RealmName)}...)
-	data, err = cmd.CombinedOutput()
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	k.Log.Debug(string(data))
-
-	return nil
-}
-
-// GenerateClientCertKey generates a client certificate and key pair for use with Kerberos x509 authentication
-func (k *KInit) GenerateClientCertKey(ctx context.Context, extensionsFile, country, stateProvince, locality, orgName, unit, commonName, email, outDir string) error {
-	keyName := fmt.Sprintf("%s-key.pem", commonName)
-	reqName := fmt.Sprintf("%s-req.pem", commonName)
-	certName := fmt.Sprintf("%s-cert.pem", commonName)
-
-	keyPath := filepath.Join(outDir, keyName)
-	reqPath := filepath.Join(outDir, reqName)
-	certPath := filepath.Join(outDir, certName)
-
-	cmd := exec.CommandContext(ctx,
-		"openssl", "req", "-newkey", "rsa:4096", "-sha256", "-nodes",
-		"-keyout", keyPath,
-		"-out", reqPath,
-		"-subj", fmt.Sprintf("/C=%s/ST=%s/L=%s/O=%s/OU=%s/CN=%s/emailAddress=%s", country, stateProvince, locality, orgName, unit, commonName, email))
-	data, err := cmd.CombinedOutput()
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	k.Log.Debug(string(data))
-
-	// env REALM=ALISTANIS.GITHUB.BETA.TAILSCALE.NET; export REALM; CLIENT=chris; export CLIENT; openssl x509 -CAkey cakey.pem -CA cacert.pem -req -in client.req -extensions client_cert -extfile extensions.kdc  -out client.pem\n
-	cmd = exec.CommandContext(ctx,
-		"openssl", "x509", "-req", "-in", reqPath,
-		"-CAkey", k.CAKeyPath,
-		"-CA", k.CACertPath,
-		"-out", certPath,
-		"-days", "3650",
-		"-extfile", extensionsFile,
-		"-extensions", "client_cert",
-		"-CACreateserial",
-	)
-
-	cmd.Env = append(cmd.Env, []string{fmt.Sprintf("REALM=%s", k.RealmName), fmt.Sprintf("CLIENT=%s", commonName)}...)
-	data, err = cmd.CombinedOutput()
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	k.Log.Debug(string(data))
-
-	return nil
 }

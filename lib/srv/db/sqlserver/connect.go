@@ -18,6 +18,7 @@ package sqlserver
 
 import (
 	"context"
+	"github.com/gravitational/teleport/lib/auth"
 	"io"
 	"net"
 	"strconv"
@@ -37,7 +38,8 @@ type Connector interface {
 }
 
 type connector struct {
-	Auth common.Auth
+	Auth       common.Auth
+	AuthClient auth.ClientI
 }
 
 // Connect connects to the target SQL Server with Kerberos authentication.

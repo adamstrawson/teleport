@@ -18,7 +18,6 @@ package sqlserver
 
 import (
 	"context"
-	"fmt"
 	"github.com/gravitational/teleport/lib/srv/db/common"
 	"github.com/gravitational/teleport/lib/srv/db/sqlserver/kinit"
 	"github.com/jcmturner/gokrb5/v8/credentials"
@@ -103,33 +102,15 @@ func (c *connector) getPKAuth(ctx context.Context, sessionCtx *common.Session) (
 	// super hacky, I just placed certs next to the teleport binary
 	// some of this information we will want in config, such as the domain controller/admin server address and the realm
 	k := kinit.New(
-		"cacert.pem",
-		"cakey.pem",
-		"usercert.pem",
-		"userkey.pem",
+		c.AuthClient,
 		sessionCtx.Identity.Username,
-		"kinit.cache",
 		strings.ToUpper(sessionCtx.Database.GetAD().Domain),
 		sessionCtx.Database.GetAD().Domain,
 		sessionCtx.Database.GetAD().Domain,
 	)
 
-	// these extensions are required for kerberos x509 auth; https://web.mit.edu/kerberos/krb5-1.13/doc/admin/pkinit.html
-	err := k.GenerateKDCExtensions("kdc.extensions")
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	cn := fmt.Sprintf("%s@%s", sessionCtx.Identity.Username, sessionCtx.Database.GetAD().Domain)
-
-	// generate ephemeral client cert and keypair
-	err = k.GenerateClientCertKey(ctx, "kdc.extensions", "US", "MA", "Boston", "Teleport", "Eng", cn, cn, ".")
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
 	// create the kinit credentials cache using the previously prepared cert/key pair
-	err = k.CreateOrAppendCredentialsCache(ctx)
+	err := k.CreateOrAppendCredentialsCache(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

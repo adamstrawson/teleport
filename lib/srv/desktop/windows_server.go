@@ -184,7 +184,7 @@ type LDAPConfig struct {
 	// Username is an LDAP username, like "EXAMPLE\Administrator", where
 	// "EXAMPLE" is the NetBIOS version of Domain.
 	Username string
-	// InsecureSkipVerify decides whether whether we skip verifying with the LDAP server's CA when making the LDAPS connection.
+	// InsecureSkipVerify decides whether we skip verifying with the LDAP server's CA when making the LDAPS connection.
 	InsecureSkipVerify bool
 	// ServerName is the name of the LDAP server for TLS.
 	ServerName string
@@ -1207,6 +1207,96 @@ func (s *WindowsService) crlDN() string {
 // where the certificate revocation list is published
 func (s *WindowsService) crlContainerDN() string {
 	return "CN=Teleport,CN=CDP,CN=Public Key Services,CN=Services,CN=Configuration," + s.cfg.LDAPConfig.domainDN()
+}
+
+func crlContainerDN(config LDAPConfig) string {
+	return "CN=Teleport,CN=CDP,CN=Public Key Services,CN=Services,CN=Configuration," + config.domainDN()
+}
+
+func crlDN(clusterName string, config LDAPConfig) string {
+	return "CN=" + clusterName + "," + crlContainerDN(config)
+}
+
+// generateCredentials generates a private key / certificate pair for the given
+// Windows username. The certificate has certain special fields different from
+// the regular Teleport user certificate, to meet the requirements of Active
+// Directory. See:
+// https://docs.microsoft.com/en-us/windows/security/identity-protection/smart-cards/smart-card-certificate-requirements-and-enumeration
+func generateCredentials(ctx context.Context, username, domain string, ttl time.Duration, clusterName string, ldapConfig LDAPConfig, authClient auth.ClientI) (certDER, keyDER []byte, err error) {
+	// Important: rdpclient currently only supports 2048-bit RSA keys.
+	// If you switch the key type here, update handle_general_authentication in
+	// rdp/rdpclient/src/piv.rs accordingly.
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+	// Also important: rdpclient expects the private key to be in PKCS1 format.
+	keyDER = x509.MarshalPKCS1PrivateKey(rsaKey)
+
+	// Generate the Windows-compatible certificate, see
+	// https://docs.microsoft.com/en-us/troubleshoot/windows-server/windows-security/enabling-smart-card-logon-third-party-certification-authorities
+	// for requirements.
+	san, err := subjectAltNameExtension(username, domain)
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+	csr := &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: username},
+		// We have to pass SAN and ExtKeyUsage as raw extensions because
+		// crypto/x509 doesn't support what we need:
+		// - x509.ExtKeyUsage doesn't have the Smartcard Logon variant
+		// - x509.CertificateRequest doesn't have OtherName SAN fields (which
+		//   is a type of SAN distinct from DNSNames, EmailAddresses, IPAddresses
+		//   and URIs)
+		ExtraExtensions: []pkix.Extension{
+			enhancedKeyUsageExtension,
+			san,
+		},
+	}
+	csrBytes, err := x509.CreateCertificateRequest(rand.Reader, csr, rsaKey)
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrBytes})
+	// Note: this CRL DN may or may not be the same DN published in updateCRL.
+	//
+	// There can be multiple AD domains connected to Teleport. Each
+	// windows_desktop_service is connected to a single AD domain and publishes
+	// CRLs in it. Each service can also handle RDP connections for a different
+	// domain, with the assumption that some other windows_desktop_service
+	// published a CRL there.
+	crlDN := crlDN(clusterName, ldapConfig)
+	genResp, err := authClient.GenerateWindowsDesktopCert(ctx, &proto.WindowsDesktopCertRequest{
+		CSR: csrPEM,
+		// LDAP URI pointing at the CRL created with updateCRL.
+		//
+		// The full format is:
+		// ldap://domain_controller_addr/distinguished_name_and_parameters.
+		//
+		// Using ldap:///distinguished_name_and_parameters (with empty
+		// domain_controller_addr) will cause Windows to fetch the CRL from any
+		// of its current domain controllers.
+		CRLEndpoint: fmt.Sprintf("ldap:///%s?certificateRevocationList?base?objectClass=cRLDistributionPoint", crlDN),
+		TTL:         proto.Duration(ttl),
+	})
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+	certBlock, _ := pem.Decode(genResp.Cert)
+	certDER = certBlock.Bytes
+	return certDER, keyDER, nil
+}
+
+func WindowsCertKeyPEM(ctx context.Context, username, domain string, ttl time.Duration, clusterName string, ldapConfig LDAPConfig, authClient auth.ClientI) (certPEM, keyPEM []byte, err error) {
+	certDER, keyDER, err := generateCredentials(ctx, username, domain, ttl, clusterName, ldapConfig, authClient)
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyDER})
+
+	return
 }
 
 // generateCredentials generates a private key / certificate pair for the given
