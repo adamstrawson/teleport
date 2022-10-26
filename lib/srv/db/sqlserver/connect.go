@@ -66,7 +66,13 @@ func (c *connector) Connect(ctx context.Context, sessionCtx *common.Session, log
 		TypeFlags:    loginPacket.TypeFlags(),
 	}
 
-	auth, err := c.getPKAuth(ctx, sessionCtx)
+	var dbAuth *krbAuth
+	if sessionCtx.Database.GetAD().KDCHostName != "" {
+		dbAuth, err = c.getPKAuth(ctx, sessionCtx)
+
+	} else {
+		dbAuth, err = c.getAuth(sessionCtx)
+	}
 	if err != nil {
 		return nil, nil, trace.Wrap(err)
 	}
@@ -79,7 +85,7 @@ func (c *connector) Connect(ctx context.Context, sessionCtx *common.Session, log
 		Encryption:   msdsn.EncryptionRequired,
 		TLSConfig:    tlsConfig,
 		PacketSize:   loginPacket.PacketSize(),
-	}, auth)
+	}, dbAuth)
 
 	conn, err := connector.Connect(ctx)
 	if err != nil {

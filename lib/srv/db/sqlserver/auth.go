@@ -18,6 +18,8 @@ package sqlserver
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"github.com/gravitational/teleport/lib/srv/db/common"
 	"github.com/gravitational/teleport/lib/srv/db/sqlserver/kinit"
 	"github.com/jcmturner/gokrb5/v8/credentials"
@@ -101,22 +103,31 @@ func (c *connector) getPKAuth(ctx context.Context, sessionCtx *common.Session) (
 
 	// super hacky, I just placed certs next to the teleport binary
 	// some of this information we will want in config, such as the domain controller/admin server address and the realm
-	k := kinit.New(
+
+	ldapPem, _ := pem.Decode([]byte(sessionCtx.Database.GetAD().LDAPCert))
+
+	cert, err := x509.ParseCertificate(ldapPem.Bytes)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	var k kinit.ProviderI = kinit.NewCommandProvider(
 		c.AuthClient,
 		sessionCtx.Identity.Username,
 		strings.ToUpper(sessionCtx.Database.GetAD().Domain),
 		sessionCtx.Database.GetAD().Domain,
 		sessionCtx.Database.GetAD().Domain,
+		cert,
 	)
 
 	// create the kinit credentials cache using the previously prepared cert/key pair
-	err := k.CreateOrAppendCredentialsCache(ctx)
+	err = k.CreateOrAppendCredentialsCache(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
 	// Load CCache.
-	cc, err := credentials.LoadCCache(k.CacheName)
+	cc, err := credentials.LoadCCache(k.CacheName())
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

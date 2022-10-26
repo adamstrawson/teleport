@@ -17,7 +17,9 @@
 package kinit
 
 import (
+	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"github.com/gravitational/teleport/api/types"
@@ -27,6 +29,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -50,60 +54,71 @@ const (
 	KRB5ConfigEnv    = "KRB5_CONFIG"
 )
 
-type KInit struct {
-	AuthClient auth.ClientI
-
-	UserName  string
-	CacheName string
-
-	RealmName string
-
-	KDCHostName     string
-	AdminServerName string
-
-	CertPath string
-	KeyPath  string
-
-	Log logrus.FieldLogger
+type ProviderI interface {
+	CreateOrAppendCredentialsCache(context.Context) error
+	CacheName() string
 }
 
-func New(authClient auth.ClientI, user, realm, kdcHost, adminServer string) *KInit {
-	return &KInit{
-		AuthClient:      authClient,
-		UserName:        user,
-		CacheName:       fmt.Sprintf("%s@%s", user, realm),
-		RealmName:       realm,
-		KDCHostName:     kdcHost,
-		AdminServerName: adminServer,
+type CommandLineKInit struct {
+	authClient auth.ClientI
 
-		CertPath: fmt.Sprintf("%s.pem", user),
-		KeyPath:  fmt.Sprintf("%s-key.pem", user),
-		Log:      logrus.StandardLogger(),
+	userName  string
+	cacheName string
+
+	realmName string
+
+	kdcHostName     string
+	adminServerName string
+
+	certPath string
+	keyPath  string
+
+	ldapCertificate *x509.Certificate
+
+	log logrus.FieldLogger
+}
+
+func NewCommandProvider(authClient auth.ClientI, user, realm, kdcHost, adminServer string, ldapCA *x509.Certificate) *CommandLineKInit {
+	return &CommandLineKInit{
+		authClient:      authClient,
+		userName:        user,
+		cacheName:       fmt.Sprintf("%s@%s", user, realm),
+		realmName:       realm,
+		kdcHostName:     kdcHost,
+		adminServerName: adminServer,
+
+		ldapCertificate: ldapCA,
+
+		certPath: fmt.Sprintf("%s.pem", user),
+		keyPath:  fmt.Sprintf("%s-key.pem", user),
+		log:      logrus.StandardLogger(),
 	}
 }
 
 // CreateOrAppendCredentialsCache creates or appends to an existing credentials cache.
-func (k *KInit) CreateOrAppendCredentialsCache(ctx context.Context) error {
+func (k *CommandLineKInit) CreateOrAppendCredentialsCache(ctx context.Context) error {
 
-	certPath := fmt.Sprintf("%s.pem", k.UserName)
-	keyPath := fmt.Sprintf("%s-key.pem", k.UserName)
-	userCAPath := "userca.pem"
+	tmp := os.TempDir()
 
-	clusterName, err := k.AuthClient.GetClusterName()
+	certPath := filepath.Join(tmp, fmt.Sprintf("%s.pem", k.userName))
+	keyPath := filepath.Join(tmp, fmt.Sprintf("%s-key.pem", k.userName))
+	userCAPath := filepath.Join(tmp, "userca.pem")
+
+	clusterName, err := k.authClient.GetClusterName()
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
-	certPEM, keyPEM, err := desktop.WindowsCertKeyPEM(ctx, k.UserName, k.RealmName, time.Second*60*60, clusterName.GetClusterName(), desktop.LDAPConfig{
-		Addr:               k.KDCHostName,
-		Domain:             k.RealmName,
-		Username:           k.UserName,
-		InsecureSkipVerify: true, // TODO set to false and provide LDAP CA
-		ServerName:         k.KDCHostName,
-		CA:                 nil,
-	}, k.AuthClient)
+	certPEM, keyPEM, err := desktop.WindowsCertKeyPEM(ctx, k.userName, k.realmName, time.Second*60*60, clusterName.GetClusterName(), desktop.LDAPConfig{
+		Addr:               k.kdcHostName,
+		Domain:             k.realmName,
+		Username:           k.userName,
+		InsecureSkipVerify: false, // TODO set to false and provide LDAP CA
+		ServerName:         k.adminServerName,
+		CA:                 k.ldapCertificate,
+	}, k.authClient)
 
-	userCA, err := k.AuthClient.GetCertAuthority(ctx, types.CertAuthID{
+	userCA, err := k.authClient.GetCertAuthority(ctx, types.CertAuthID{
 		Type:       types.UserCA,
 		DomainName: clusterName.GetClusterName(),
 	}, true)
@@ -111,6 +126,7 @@ func (k *KInit) CreateOrAppendCredentialsCache(ctx context.Context) error {
 		return trace.Wrap(err)
 	}
 
+	// get the user CA certificate bytes
 	var caCert []byte
 	keyPairs := userCA.GetActiveKeys().TLS
 	for _, keyPair := range keyPairs {
@@ -123,7 +139,7 @@ func (k *KInit) CreateOrAppendCredentialsCache(ctx context.Context) error {
 		return trace.Wrap(errors.New("no certificate authority was found in userCA active keys"))
 	}
 
-	// TODO remove all files
+	// store files in temp dir
 	err = os.WriteFile(certPath, certPEM, 0644)
 	if err != nil {
 		return trace.Wrap(err)
@@ -139,30 +155,45 @@ func (k *KInit) CreateOrAppendCredentialsCache(ctx context.Context) error {
 		return trace.Wrap(err)
 	}
 
-	krbConfPath := fmt.Sprintf("krb_%s", k.UserName)
+	krbConfPath := filepath.Join(tmp, fmt.Sprintf("krb_%s", k.userName))
 	err = k.WriteKRB5Config(krbConfPath)
 	if err != nil {
 		return trace.Wrap(err)
 	}
 
+	// I'm not a fan of this or of writing all these files in the first place, but in testing kinit, it does not have
+	// the ability to access key data over stdin and requires these files to function for x509 auth
+	defer func() {
+		_ = os.RemoveAll(tmp)
+	}()
+
 	cmd := exec.CommandContext(ctx,
 		"kinit",
 		"-X", fmt.Sprintf("X509_anchors=FILE:%s", userCAPath),
-		"-X", fmt.Sprintf("X509_user_identity=FILE:%s,%s", certPath, keyPath), k.UserName,
-		"-c", k.CacheName)
+		"-X", fmt.Sprintf("X509_user_identity=FILE:%s,%s", certPath, keyPath), k.userName,
+		"-c", k.cacheName)
 	cmd.Env = append(os.Environ(), []string{fmt.Sprintf("%s=%s", KRB5ConfigEnv, krbConfPath)}...)
 
 	data, err := cmd.CombinedOutput()
 	if err != nil {
 		return trace.Wrap(err)
 	}
+
+	if !bytes.Contains(data, []byte(fmt.Sprintf(`Storing %s@%s -> `, k.userName, strings.ToUpper(k.realmName)))) {
+		k.log.Debug(string(data))
+		return trace.Wrap(fmt.Errorf("unable to store credentials for user: %s, output: %s", k.userName, string(data)))
+	}
+
 	// todo better error handling from output/fully wrap libkrb5 for linux
-	k.Log.Debug(string(data))
 	return nil
 }
 
+func (k *CommandLineKInit) CacheName() string {
+	return k.cacheName
+}
+
 // krb5ConfigString returns a config suitable for a kdc
-func (k *KInit) krb5ConfigString() string {
+func (k *CommandLineKInit) krb5ConfigString() string {
 	return fmt.Sprintf(`[libdefaults]
  default_realm = %s
  rdns = false
@@ -174,9 +205,9 @@ func (k *KInit) krb5ConfigString() string {
   admin_server = %s
   pkinit_eku_checking = kpServerAuth
   pkinit_kdc_hostname = %s
- }`, k.RealmName, k.RealmName, k.KDCHostName, k.AdminServerName, k.KDCHostName)
+ }`, k.realmName, k.realmName, k.kdcHostName, k.adminServerName, k.kdcHostName)
 }
 
-func (k *KInit) WriteKRB5Config(path string) error {
+func (k *CommandLineKInit) WriteKRB5Config(path string) error {
 	return os.WriteFile(path, []byte(k.krb5ConfigString()), 0644)
 }
