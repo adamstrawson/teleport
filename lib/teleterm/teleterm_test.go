@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package teleterm_test
+package teleterm
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -24,38 +25,104 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gravitational/teleport/lib/teleterm"
+	"github.com/gravitational/teleport/lib/utils"
+
 	"github.com/stretchr/testify/require"
 )
 
 func TestStart(t *testing.T) {
-	homeDir := t.TempDir()
-	certsDir := t.TempDir()
-	sockPath := filepath.Join(homeDir, "teleterm.sock")
+	t.Parallel()
 
-	cfg := teleterm.Config{
-		Addr:     fmt.Sprintf("unix://%v", sockPath),
-		HomeDir:  homeDir,
-		CertsDir: certsDir,
+	sockDir := t.TempDir()
+	sockPath := filepath.Join(sockDir, "teleterm.sock")
+
+	tests := []struct {
+		name string
+		addr string
+	}{
+		{
+			// No mTLS.
+			name: "unix",
+			addr: fmt.Sprintf("unix://%v", sockPath),
+		},
+		{
+			// Requires mTLS.
+			name: "tcp",
+			addr: "tcp://localhost:0",
+		},
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	serveErr := make(chan error)
-	go func() {
-		err := teleterm.Serve(ctx, cfg)
-		serveErr <- err
-	}()
+			homeDir := t.TempDir()
+			certsDir := t.TempDir()
+			listeningC := make(chan utils.NetAddr)
 
-	blockUntilServerAcceptsConnections(t, sockPath)
+			cfg := Config{
+				Addr:       test.addr,
+				HomeDir:    homeDir,
+				CertsDir:   certsDir,
+				ListeningC: listeningC,
+			}
 
-	// Stop the server.
-	cancel()
-	require.NoError(t, <-serveErr)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			serveErr := make(chan error)
+			go func() {
+				err := Serve(ctx, cfg)
+				serveErr <- err
+			}()
+
+			select {
+			case addr := <-listeningC:
+				// Verify that the server accepts connections on the advertised address.
+				blockUntilServerAcceptsConnections(t, addr, certsDir)
+			case <-time.After(time.Second):
+				t.Fatal("listeningC didn't advertise the address within the timeout")
+			}
+
+			// Stop the server.
+			cancel()
+			require.NoError(t, <-serveErr)
+		})
+	}
+
 }
 
-func blockUntilServerAcceptsConnections(t *testing.T, sockPath string) {
+// blockUntilServerAcceptsConnections dials the addr and then reads from the connection.
+// In case of a unix addr, it waits for the socket file to be created before attempting to dial.
+// In case of a tcp addr, it sets up an mTLS config for the dialer.
+func blockUntilServerAcceptsConnections(t *testing.T, addr utils.NetAddr, certsDir string) {
+	var conn net.Conn
+	switch addr.AddrNetwork {
+	case "unix":
+		conn = dialUnix(t, addr)
+	case "tcp":
+		conn = dialTcp(t, addr, certsDir)
+	default:
+		t.Fatalf("Unknown addr network %v", addr.AddrNetwork)
+	}
+
+	t.Cleanup(func() { conn.Close() })
+
+	err := conn.SetReadDeadline(time.Now().Add(time.Second))
+	require.NoError(t, err)
+
+	out := make([]byte, 1024)
+	_, err = conn.Read(out)
+	require.NoError(t, err)
+
+	err = conn.Close()
+	require.NoError(t, err)
+}
+
+func dialUnix(t *testing.T, addr utils.NetAddr) net.Conn {
+	sockPath := addr.Addr
+
 	// Wait for the socket to be created.
 	require.Eventually(t, func() bool {
 		_, err := os.Stat(sockPath)
@@ -66,17 +133,28 @@ func blockUntilServerAcceptsConnections(t *testing.T, sockPath string) {
 		return true
 	}, time.Millisecond*500, time.Millisecond*50)
 
-	conn, err := net.DialTimeout("unix", sockPath, time.Second*1)
+	conn, err := net.DialTimeout("unix", sockPath, time.Second)
 	require.NoError(t, err)
-	t.Cleanup(func() { conn.Close() })
+	return conn
+}
 
-	err = conn.SetReadDeadline(time.Now().Add(time.Second))
+func dialTcp(t *testing.T, addr utils.NetAddr, certsDir string) net.Conn {
+	// Hardcoded filenames under which Connect expects certs. In this test suite, we're trying to
+	// reach the tsh gRPC server, so we need to use the renderer cert as the client cert.
+	clientCertPath := filepath.Join(certsDir, rendererCertFileName)
+	serverCertPath := filepath.Join(certsDir, tshdCertFileName)
+	clientCert, err := generateAndSaveCert(clientCertPath)
 	require.NoError(t, err)
 
-	out := make([]byte, 1024)
-	_, err = conn.Read(out)
-	require.NoError(t, err)
+	tlsConfig, err := createClientTlsConfig(clientCert, serverCertPath)
+	dialer := tls.Dialer{
+		Config: tlsConfig,
+	}
 
-	err = conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(func() { cancel() })
+
+	conn, err := dialer.DialContext(ctx, addr.AddrNetwork, addr.Addr)
 	require.NoError(t, err)
+	return conn
 }

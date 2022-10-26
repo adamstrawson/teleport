@@ -16,6 +16,7 @@ package apiserver
 
 import (
 	"github.com/gravitational/teleport/lib/teleterm/daemon"
+	"github.com/gravitational/teleport/lib/utils"
 
 	"github.com/gravitational/trace"
 
@@ -32,6 +33,9 @@ type Config struct {
 	// Log is a component logger
 	Log             logrus.FieldLogger
 	TshdServerCreds grpc.ServerOption
+	// ListeningC propagates the address on which the gRPC server listens. Mostly useful in tests, as
+	// the Electron app gets the server port from stdout.
+	ListeningC chan<- utils.NetAddr
 }
 
 // CheckAndSetDefaults checks and sets default config values.
