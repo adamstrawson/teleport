@@ -1325,6 +1325,8 @@ type DiscoveryConfig struct {
 	AWSMatchers []services.AWSMatcher
 	// AzureMatchers are used to match resources for auto discovery.
 	AzureMatchers []services.AzureMatcher
+	// GCPMatchers are used to match GCP resources for auto discovery.
+	GCPMatchers []services.GCPMatcher
 }
 
 // ParseHeader parses the provided string as a http header.

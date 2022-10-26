@@ -25,7 +25,8 @@ import (
 )
 
 func (process *TeleportProcess) shouldInitDiscovery() bool {
-	return process.Config.Discovery.Enabled && (len(process.Config.Discovery.AWSMatchers) != 0 || len(process.Config.Discovery.AzureMatchers) != 0)
+	return process.Config.Discovery.Enabled && (len(process.Config.Discovery.AWSMatchers) != 0 ||
+		len(process.Config.Discovery.AzureMatchers) != 0 || len(process.Config.Discovery.GCPMatchers) != 0)
 }
 
 func (process *TeleportProcess) initDiscovery() {
@@ -59,6 +60,7 @@ func (process *TeleportProcess) initDiscoveryService() error {
 		Clients:       cloud.NewClients(),
 		AWSMatchers:   process.Config.Discovery.AWSMatchers,
 		AzureMatchers: process.Config.Discovery.AzureMatchers,
+		GCPMatchers:   process.Config.Discovery.GCPMatchers,
 		Emitter:       asyncEmitter,
 		AccessPoint:   accessPoint,
 		Log:           process.log,
