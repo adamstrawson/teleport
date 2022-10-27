@@ -1,0 +1,162 @@
+---
+title: Dynamic Kubernetes Cluster Registration
+description: Register and unregister Kubernetes clusters without restarting a Teleport Kubernetes Service instance.
+---
+
+Dynamic Kubernetes cluster registration enables you to manage the Kubernetes
+clusters connected to your Teleport cluster without needing to modify the
+configuration file of an individual Kubernetes Service instance. This is well
+suited for situations in which you have deployed multiple Kubernetes Service
+instances or needto add and remove access to Kubernetes clusters regularly. 
+
+## Prerequisites
+
+(!docs/pages/includes/edition-prereqs-tabs.mdx!)
+
+- A Linux host or Kubernetes cluster where you will install the Teleport
+  Kubernetes Service.
+
+- A Kubernetes cluster to join to your Teleport cluster. 
+  {*/TODO: Recommend making this a separate cluster to the one in the previous
+  bullet?*/}
+
+(!docs/pages/includes/tctl.mdx!)
+
+## Step 1/ . Set up the Teleport Kubernetes Service
+
+### Install the Teleport Kubernetes Service
+
+{/*TODO: Add instructions, tabbed for a host and a K8s cluster (install the
+binary or add the Helm repo*/}
+
+### Configure the Teleport Kubernetes Service
+
+<Tabs>
+<TabItem label="Linux Host">
+
+{/*TODO: Edit for the `kubernetes_service`*/}
+
+To enable dynamic registration, include a `resources` section in your database
+agent configuration with a list of resource label selectors you'd like this
+agent to monitor:
+
+```yaml
+db_service:
+  enabled: "yes"
+  resources:
+  - labels:
+      "*": "*"
+```
+
+You can use a wildcard selector to monitor all database resources in the cluster,
+or provide a specific set of labels to monitor a subset:
+
+```yaml
+resources:
+- labels:
+    "env": "prod"
+    "engine": "postgres"
+- labels:
+    "env": "test"
+    "engine": "mysql"
+```
+
+</TabItem>
+<TabItem label="Kubernetes Cluster">
+
+{/* TODO: Instructions for adding a values file*/}
+
+</TabItem>
+</Tabs>
+
+### Run the Teleport Kubernetes Service
+
+{/*TODO: Add tabbed instructions for running the binary or running "helm install"*/}
+
+## Step 2/ . Authorize your user to access your Kubernetes cluster
+
+{/*TODO: RBAC instructions*/}
+
+## Step 3/ . Manage dynamic Kubernetes cluster resources
+
+### Authorize your user to manage Kubernetes clusters
+
+{/* TODO: edit for Kubernetes*/}
+
+The user creating the dynamic registration needs to have a role with access to the 
+database labels and the `db` resource.  In this example role the user can only
+create and maintain database services labeled `env: prod` and `engine: postgres`.
+
+```yaml
+kind: role
+metadata:
+  name: dynamicregexample
+spec:
+  allow:
+    db_labels:
+      engine: postgres
+      env: prod
+    rules:
+    - resources:
+      - db
+      verbs:
+      - list
+      - create
+      - read
+      - update
+      - delete
+version: v5
+```
+
+### Create a Kubernetes cluster resource
+
+{/* TODO: Modify for Kubernetes*/}
+
+Next define a database resource:
+
+```yaml
+kind: db
+version: v3
+metadata:
+  name: example
+  description: "Example database"
+  labels:
+    env: prod
+    engine: postgres
+spec:
+  protocol: "postgres"
+  uri: "localhost:5432"
+```
+
+To create a database resource, run:
+
+```code
+$ tctl create database.yaml
+```
+
+After the resource has been created, it will appear among the list of available
+databases (in `tsh db ls` or UI) as long as at least one Database Service
+instance picks it up according to its label selectors.
+
+To update an existing database resource, run:
+
+```code
+$ tctl create -f database.yaml
+```
+
+### List Kubernetes cluster resources
+
+{/* TODO */}
+
+### Delete Kubernetes cluster resources
+
+{/* TODO: Edit the below for Kubernetes*/}
+
+If the updated resource's labels no longer match a particular database agent, it
+will unregister and stop proxying it.
+
+To delete a database resource, run:
+
+```code
+$ tctl rm db/example
+```

@@ -688,6 +688,10 @@
             {
               "title": "Standalone",
               "slug": "/kubernetes-access/guides/standalone-teleport/"
+            },
+            {
+              "title": "Dynamic Registration",
+              "slug": "/kubernetes-access/guides/dynamic-registration/"
             }
           ]
         },
