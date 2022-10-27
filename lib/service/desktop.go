@@ -18,6 +18,7 @@ package service
 
 import (
 	"crypto/tls"
+	"github.com/gravitational/teleport/lib/auth/windows"
 	"net"
 	"net/http"
 	"strconv"
@@ -214,7 +215,7 @@ func (process *TeleportProcess) initWindowsDesktopServiceRegistered(log *logrus.
 			StaticHosts: cfg.WindowsDesktop.Hosts,
 			OnHeartbeat: process.onHeartbeat(teleport.ComponentWindowsDesktop),
 		},
-		LDAPConfig:                   desktop.LDAPConfig(cfg.WindowsDesktop.LDAP),
+		LDAPConfig:                   windows.LDAPConfig(cfg.WindowsDesktop.LDAP),
 		DiscoveryBaseDN:              cfg.WindowsDesktop.Discovery.BaseDN,
 		DiscoveryLDAPFilters:         cfg.WindowsDesktop.Discovery.Filters,
 		DiscoveryLDAPAttributeLabels: cfg.WindowsDesktop.Discovery.LabelAttributes,
