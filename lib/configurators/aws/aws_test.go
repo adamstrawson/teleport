@@ -51,7 +51,7 @@ func TestAWSIAMDocuments(t *testing.T) {
 
 	tests := map[string]struct {
 		returnError        bool
-		flags              BootstrapFlags
+		flags              configurators.BootstrapFlags
 		fileConfig         *config.FileConfig
 		target             awslib.Identity
 		statements         []*awslib.Statement
@@ -460,7 +460,7 @@ func TestAWSIAMDocuments(t *testing.T) {
 		},
 		"AudoDiscovery EC2": {
 			target: roleTarget,
-			flags:  BootstrapFlags{DiscoveryService: true},
+			flags:  configurators.BootstrapFlags{DiscoveryService: true},
 			fileConfig: &config.FileConfig{
 				Discovery: config.Discovery{
 					AWSMatchers: []config.AWSMatcher{
@@ -678,7 +678,7 @@ func TestAWSPoliciesTarget(t *testing.T) {
 	require.NoError(t, err)
 
 	tests := map[string]struct {
-		flags             BootstrapFlags
+		flags             configurators.BootstrapFlags
 		identity          awslib.Identity
 		accountID         string
 		partitionID       string
@@ -688,7 +688,7 @@ func TestAWSPoliciesTarget(t *testing.T) {
 		targetPartitionID string
 	}{
 		"UserNameFromFlags": {
-			flags:             BootstrapFlags{AttachToUser: "example-user"},
+			flags:             configurators.BootstrapFlags{AttachToUser: "example-user"},
 			accountID:         "123456",
 			partitionID:       "aws",
 			targetType:        awslib.User{},
@@ -697,14 +697,14 @@ func TestAWSPoliciesTarget(t *testing.T) {
 			targetPartitionID: "aws",
 		},
 		"UserARNFromFlags": {
-			flags:             BootstrapFlags{AttachToUser: "arn:aws:iam::123456:user/example-user"},
+			flags:             configurators.BootstrapFlags{AttachToUser: "arn:aws:iam::123456:user/example-user"},
 			targetType:        awslib.User{},
 			targetName:        "example-user",
 			targetAccountID:   "123456",
 			targetPartitionID: "aws",
 		},
 		"RoleNameFromFlags": {
-			flags:             BootstrapFlags{AttachToRole: "example-role"},
+			flags:             configurators.BootstrapFlags{AttachToRole: "example-role"},
 			accountID:         "123456",
 			partitionID:       "aws",
 			targetType:        awslib.Role{},
@@ -713,14 +713,14 @@ func TestAWSPoliciesTarget(t *testing.T) {
 			targetPartitionID: "aws",
 		},
 		"RoleARNFromFlags": {
-			flags:             BootstrapFlags{AttachToRole: "arn:aws:iam::123456:role/example-role"},
+			flags:             configurators.BootstrapFlags{AttachToRole: "arn:aws:iam::123456:role/example-role"},
 			targetType:        awslib.Role{},
 			targetName:        "example-role",
 			targetAccountID:   "123456",
 			targetPartitionID: "aws",
 		},
 		"UserFromIdentity": {
-			flags:             BootstrapFlags{},
+			flags:             configurators.BootstrapFlags{},
 			identity:          userIdentity,
 			targetType:        awslib.User{},
 			targetName:        userIdentity.GetName(),
@@ -728,7 +728,7 @@ func TestAWSPoliciesTarget(t *testing.T) {
 			targetPartitionID: userIdentity.GetPartition(),
 		},
 		"RoleFromIdentity": {
-			flags:             BootstrapFlags{},
+			flags:             configurators.BootstrapFlags{},
 			identity:          roleIdentity,
 			targetType:        awslib.Role{},
 			targetName:        roleIdentity.GetName(),
@@ -736,7 +736,7 @@ func TestAWSPoliciesTarget(t *testing.T) {
 			targetPartitionID: roleIdentity.GetPartition(),
 		},
 		"DefaultTarget": {
-			flags:             BootstrapFlags{},
+			flags:             configurators.BootstrapFlags{},
 			accountID:         "*",
 			partitionID:       "*",
 			targetType:        awslib.User{},
@@ -788,7 +788,7 @@ func TestAWSDocumentConfigurator(t *testing.T) {
 				},
 			},
 		},
-		Flags: BootstrapFlags{
+		Flags: configurators.BootstrapFlags{
 			DiscoveryService:    true,
 			ForceEC2Permissions: true,
 		},
@@ -819,7 +819,7 @@ func TestAWSConfigurator(t *testing.T) {
 		AWSSTSClient: &STSMock{ARN: "arn:aws:iam::1234567:role/example-role"},
 		AWSSSMClient: &SSMMock{},
 		FileConfig:   &config.FileConfig{},
-		Flags: BootstrapFlags{
+		Flags: configurators.BootstrapFlags{
 			AttachToUser:        "some-user",
 			ForceRDSPermissions: true,
 		},

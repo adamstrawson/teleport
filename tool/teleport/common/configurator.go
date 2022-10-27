@@ -107,7 +107,7 @@ func onDumpDatabaseConfig(flags createDatabaseConfigFlags) error {
 
 // configureDiscoveryBootstrapFlags database configure bootstrap flags.
 type configureDiscoveryBootstrapFlags struct {
-	config  awsconfigurators.BootstrapFlags
+	config  configurators.BootstrapFlags
 	confirm bool
 }
 
@@ -206,7 +206,7 @@ func buildAWSConfigurator(manual bool, flags configureDatabaseAWSFlags) (configu
 	}
 
 	fileConfig := &config.FileConfig{}
-	configuratorFlags := awsconfigurators.BootstrapFlags{
+	configuratorFlags := configurators.BootstrapFlags{
 		Manual:       manual,
 		PolicyName:   flags.policyName,
 		AttachToUser: flags.user,

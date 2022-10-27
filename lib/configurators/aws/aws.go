@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gravitational/teleport/api/constants"
 	apiutils "github.com/gravitational/teleport/api/utils"
 	awsutils "github.com/gravitational/teleport/api/utils/aws"
 	awslib "github.com/gravitational/teleport/lib/cloud/aws"
@@ -135,7 +136,7 @@ type awsConfigurator struct {
 
 type ConfiguratorConfig struct {
 	// Flags user-provided flags to configure/execute the configurator.
-	Flags BootstrapFlags
+	Flags configurators.BootstrapFlags
 	// FileConfig Teleport database agent config.
 	FileConfig *config.FileConfig
 	// AWSSession current AWS session.
@@ -315,23 +316,22 @@ func (a *awsPoliciesAttacher) Execute(ctx context.Context, actionCtx *configurat
 	return nil
 }
 
-// buildActions generates the policy documents and configurator actions.
-func buildActions(config ConfiguratorConfig) ([]configurators.ConfiguratorAction, error) {
-	// Identity is going to be empty (`nil`) when running the command on
-	// `Manual` mode, place a wildcard to keep the generated policies valid.
-	accountID := "*"
-	partitionID := "*"
-	if config.Identity != nil {
-		accountID = config.Identity.GetAccountID()
-		partitionID = config.Identity.GetPartition()
-	}
-
-	// Define the target and target type.
-	target, err := policiesTarget(config.Flags, accountID, partitionID, config.Identity)
+func buildDiscoveryActions(config ConfiguratorConfig, target awslib.Identity) ([]configurators.ConfiguratorAction, error) {
+	actions, err := buildCommonActions(config, target)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
+	ssmDocumentCreators, err := buildSSMDocuments(config.AWSSSMClient, config.Flags, config.FileConfig)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	actions = append(actions, ssmDocumentCreators...)
+	return actions, nil
+}
+
+func buildCommonActions(config ConfiguratorConfig, target awslib.Identity) ([]configurators.ConfiguratorAction, error) {
 	// Generate policies.
 	policy, err := buildPolicyDocument(config.Flags, config.FileConfig, target)
 	if err != nil {
@@ -354,16 +354,7 @@ func buildActions(config ConfiguratorConfig) ([]configurators.ConfiguratorAction
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-
-	var ssmDocumentCreators []configurators.ConfiguratorAction
-	if config.Flags.DiscoveryService {
-		ssmDocumentCreators, err = buildSSMDocuments(config.AWSSSMClient, config.Flags, config.FileConfig)
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-	}
-
-	actions := []configurators.ConfiguratorAction{}
+	var actions []configurators.ConfiguratorAction
 
 	// Create IAM Policy.
 	actions = append(actions, &awsPolicyCreator{
@@ -372,33 +363,49 @@ func buildActions(config ConfiguratorConfig) ([]configurators.ConfiguratorAction
 		formattedPolicy: formattedPolicy,
 	})
 
-	if policyBoundary != nil {
-		formattedPolicyBoundary, err := policyBoundary.Document.Marshal()
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-		// Create IAM Policy boundary.
-		actions = append(actions, &awsPolicyCreator{
-			policies:        config.Policies,
-			policy:          policyBoundary,
-			formattedPolicy: formattedPolicyBoundary,
-			isBoundary:      true,
-		})
+	formattedPolicyBoundary, err := policyBoundary.Document.Marshal()
+	if err != nil {
+		return nil, trace.Wrap(err)
 	}
-
-	if len(ssmDocumentCreators) != 0 {
-		actions = append(actions, ssmDocumentCreators...)
-	}
+	// Create IAM Policy boundary.
+	actions = append(actions, &awsPolicyCreator{
+		policies:        config.Policies,
+		policy:          policyBoundary,
+		formattedPolicy: formattedPolicyBoundary,
+		isBoundary:      true,
+	})
 
 	// Attach both policies to the target.
 	actions = append(actions, &awsPoliciesAttacher{policies: config.Policies, target: target})
-
 	return actions, nil
+}
+
+// buildActions generates the policy documents and configurator actions.
+func buildActions(config ConfiguratorConfig) ([]configurators.ConfiguratorAction, error) {
+	// Identity is going to be empty (`nil`) when running the command on
+	// `Manual` mode, place a wildcard to keep the generated policies valid.
+	accountID := "*"
+	partitionID := "*"
+	if config.Identity != nil {
+		accountID = config.Identity.GetAccountID()
+		partitionID = config.Identity.GetPartition()
+	}
+
+	// Define the target and target type.
+	target, err := policiesTarget(config.Flags, accountID, partitionID, config.Identity)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if config.Flags.DiscoveryService {
+		return buildDiscoveryActions(config, target)
+	}
+	return buildCommonActions(config, target)
 }
 
 // policiesTarget defines which target and its type the policies will be
 // attached to.
-func policiesTarget(flags BootstrapFlags, accountID string, partitionID string, identity awslib.Identity) (awslib.Identity, error) {
+func policiesTarget(flags configurators.BootstrapFlags, accountID string, partitionID string, identity awslib.Identity) (awslib.Identity, error) {
 	if flags.AttachToUser != "" {
 		userArn := flags.AttachToUser
 		if !arn.IsARN(flags.AttachToUser) {
@@ -425,7 +432,7 @@ func policiesTarget(flags BootstrapFlags, accountID string, partitionID string, 
 }
 
 // buildPolicyBoundaryDocument builds the policy document.
-func buildPolicyDocument(flags BootstrapFlags, fileConfig *config.FileConfig, target awslib.Identity) (*awslib.Policy, error) {
+func buildPolicyDocument(flags configurators.BootstrapFlags, fileConfig *config.FileConfig, target awslib.Identity) (*awslib.Policy, error) {
 	var statements []*awslib.Statement
 
 	if flags.DiscoveryService {
@@ -502,14 +509,14 @@ func getProxyAddrFromFileConfig(fc *config.FileConfig) (string, error) {
 	return fmt.Sprintf("https://%s", addr.String()), nil
 }
 
-func buildSSMDocuments(ssm ssmiface.SSMAPI, flags BootstrapFlags, fileConfig *config.FileConfig) ([]configurators.ConfiguratorAction, error) {
+func buildSSMDocuments(ssm ssmiface.SSMAPI, flags configurators.BootstrapFlags, fileConfig *config.FileConfig) ([]configurators.ConfiguratorAction, error) {
 	var creators []configurators.ConfiguratorAction
 	proxyAddr, err := getProxyAddrFromFileConfig(fileConfig)
 	if err != nil {
 		return nil, err
 	}
 	for _, matcher := range fileConfig.Discovery.AWSMatchers {
-		if !apiutils.SliceContainsStr(matcher.Types, "ec2") {
+		if !apiutils.SliceContainsStr(matcher.Types, constants.AWSServiceTypeEC2) {
 			continue
 		}
 		ssmCreator := awsSSMDocumentCreator{
@@ -523,7 +530,7 @@ func buildSSMDocuments(ssm ssmiface.SSMAPI, flags BootstrapFlags, fileConfig *co
 }
 
 // buildPolicyBoundaryDocument builds the policy boundary document.
-func buildPolicyBoundaryDocument(flags BootstrapFlags, fileConfig *config.FileConfig, target awslib.Identity) (*awslib.Policy, error) {
+func buildPolicyBoundaryDocument(flags configurators.BootstrapFlags, fileConfig *config.FileConfig, target awslib.Identity) (*awslib.Policy, error) {
 	var statements []*awslib.Statement
 
 	if isEC2AutoDiscoveryEnabled(flags, fileConfig) {
@@ -589,59 +596,59 @@ func buildPolicyBoundaryDocument(flags BootstrapFlags, fileConfig *config.FileCo
 
 // isRDSAutoDiscoveryEnabled checks if the agent needs permission for
 // RDS/Aurora auto-discovery.
-func isEC2AutoDiscoveryEnabled(flags BootstrapFlags, fileConfig *config.FileConfig) bool {
+func isEC2AutoDiscoveryEnabled(flags configurators.BootstrapFlags, fileConfig *config.FileConfig) bool {
 	if flags.ForceEC2Permissions {
 		return true
 	}
-	return isAutoDiscoveryEnabledForMatcher(fileConfig, services.AWSMatcherEC2, fileConfig.Discovery.AWSMatchers)
+	return isAutoDiscoveryEnabledForMatcher(services.AWSMatcherEC2, fileConfig.Discovery.AWSMatchers)
 }
 
 // isRDSAutoDiscoveryEnabled checks if the agent needs permission for
 // RDS/Aurora auto-discovery.
-func isRDSAutoDiscoveryEnabled(flags BootstrapFlags, fileConfig *config.FileConfig) bool {
+func isRDSAutoDiscoveryEnabled(flags configurators.BootstrapFlags, fileConfig *config.FileConfig) bool {
 	if flags.ForceRDSPermissions {
 		return true
 	}
 
-	return isAutoDiscoveryEnabledForMatcher(fileConfig, services.AWSMatcherRDS, fileConfig.Databases.AWSMatchers)
+	return isAutoDiscoveryEnabledForMatcher(services.AWSMatcherRDS, fileConfig.Databases.AWSMatchers)
 }
 
 // hasRedshiftDatabases checks if the agent needs permission for
 // Redshift databases.
-func hasRedshiftDatabases(flags BootstrapFlags, fileConfig *config.FileConfig) bool {
+func hasRedshiftDatabases(flags configurators.BootstrapFlags, fileConfig *config.FileConfig) bool {
 	if flags.ForceRedshiftPermissions {
 		return true
 	}
 
-	return isAutoDiscoveryEnabledForMatcher(fileConfig, services.AWSMatcherRedshift, fileConfig.Databases.AWSMatchers) ||
+	return isAutoDiscoveryEnabledForMatcher(services.AWSMatcherRedshift, fileConfig.Databases.AWSMatchers) ||
 		findEndpointIs(fileConfig, awsutils.IsRedshiftEndpoint)
 }
 
 // hasElastiCacheDatabases checks if the agent needs permission for
 // ElastiCache databases.
-func hasElastiCacheDatabases(flags BootstrapFlags, fileConfig *config.FileConfig) bool {
+func hasElastiCacheDatabases(flags configurators.BootstrapFlags, fileConfig *config.FileConfig) bool {
 	if flags.ForceElastiCachePermissions {
 		return true
 	}
 
-	return isAutoDiscoveryEnabledForMatcher(fileConfig, services.AWSMatcherElastiCache, fileConfig.Databases.AWSMatchers) ||
+	return isAutoDiscoveryEnabledForMatcher(services.AWSMatcherElastiCache, fileConfig.Databases.AWSMatchers) ||
 		findEndpointIs(fileConfig, awsutils.IsElastiCacheEndpoint)
 }
 
 // hasMemoryDBDatabases checks if the agent needs permission for
 // ElastiCache databases.
-func hasMemoryDBDatabases(flags BootstrapFlags, fileConfig *config.FileConfig) bool {
+func hasMemoryDBDatabases(flags configurators.BootstrapFlags, fileConfig *config.FileConfig) bool {
 	if flags.ForceMemoryDBPermissions {
 		return true
 	}
 
-	return isAutoDiscoveryEnabledForMatcher(fileConfig, services.AWSMatcherMemoryDB, fileConfig.Databases.AWSMatchers) ||
+	return isAutoDiscoveryEnabledForMatcher(services.AWSMatcherMemoryDB, fileConfig.Databases.AWSMatchers) ||
 		findEndpointIs(fileConfig, awsutils.IsMemoryDBEndpoint)
 }
 
 // isAutoDiscoveryEnabledForMatcher returns true if provided AWS matcher type
 // is found.
-func isAutoDiscoveryEnabledForMatcher(fileConfig *config.FileConfig, matcherType string, matchers []config.AWSMatcher) bool {
+func isAutoDiscoveryEnabledForMatcher(matcherType string, matchers []config.AWSMatcher) bool {
 	for _, matcher := range matchers {
 		for _, databaseType := range matcher.Types {
 			if databaseType == matcherType {

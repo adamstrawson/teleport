@@ -19,6 +19,7 @@ import "context"
 // BootstrapFlags flags provided by users to configure and define how the
 // configurators will work.
 type BootstrapFlags struct {
+	DiscoveryService bool
 	// ConfigPath database agent configuration path.
 	ConfigPath string
 	// Manual boolean indicating if the configurator will perform the
@@ -26,8 +27,20 @@ type BootstrapFlags struct {
 	Manual bool
 	// PolicyName name of the generated policy.
 	PolicyName string
+	// AttachToUser user that the generated policies will be attached to.
+	AttachToUser string
 	// AttachToRole role that the generated policies will be attached to.
 	AttachToRole string
+	// ForceRDSPermissions forces the presence of RDS permissions.
+	ForceRDSPermissions bool
+	// ForceRedshiftPermissions forces the presence of Redshift permissions.
+	ForceRedshiftPermissions bool
+	// ForceElastiCachePermissions forces the presence of ElastiCache permissions.
+	ForceElastiCachePermissions bool
+	// ForceMemoryDBPermissions forces the presence of MemoryDB permissions.
+	ForceMemoryDBPermissions bool
+	// ForceEC2Permissions forces the presence of EC2 permissions.
+	ForceEC2Permissions bool
 }
 
 // ConfiguratorActionContext context passed across configurator actions. It is
