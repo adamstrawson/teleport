@@ -13,82 +13,88 @@ instances or needto add and remove access to Kubernetes clusters regularly.
 
 (!docs/pages/includes/edition-prereqs-tabs.mdx!)
 
-- A Linux host or Kubernetes cluster where you will install the Teleport
-  Kubernetes Service.
+- A Linux host where you will install the Teleport Kubernetes Service.
+
+  <Notice type="tip">
+
+  Our `teleport-kube-agent` Helm chart does not support dynamic Kubernetes
+  cluster registration.
+
+  </Notice>
 
 - A Kubernetes cluster to join to your Teleport cluster. 
-  {*/TODO: Recommend making this a separate cluster to the one in the previous
-  bullet?*/}
 
 (!docs/pages/includes/tctl.mdx!)
 
 ## Step 1/3. Set up the Teleport Kubernetes Service
+
+### Get a join token
+
+Establish trust between your Kubernetes Service instance and your Teleport
+cluster by creating a join token for the Kubernetes Service instance:
+
+```code
+# Create a join token for the Teleport Kubernetes Service to authenticate
+$ TOKEN=$(tctl nodes add --roles=kube --ttl=10000h --format=json | jq -r '.[0]')
+$ echo $TOKEN
+```
 
 ### Install the Teleport Kubernetes Service
 
 Install the Teleport Kubernetes Service on your Linux host or Kubernetes
 cluster:
 
-<Tabs>
-<TabItem label="Linux Host">
-
 (!docs/pages/includes/install-linux.mdx!)
-
-</TabItem>
-<TabItem label="Kubernetes Cluster">
-
-Add the Teleport Helm repository:
-
-```code
-$ helm repo add teleport (=teleport.helm_repo_url=)
-```
-
-</TabItem>
-</Tabs>
 
 ### Configure the Teleport Kubernetes Service
 
-<Tabs>
-<TabItem label="Linux Host">
-
-{/*TODO: Edit for the `kubernetes_service`*/}
-
-To enable dynamic registration, include a `resources` section in your database
-agent configuration with a list of resource label selectors you'd like this
-agent to monitor:
+On the host where you will run the Teleport Kubernetes Service, edit your
+configuration file at `/etc/teleport.yaml` to include the following:
 
 ```yaml
-db_service:
+kubernetes_service:
   enabled: "yes"
   resources:
   - labels:
       "*": "*"
 ```
 
-You can use a wildcard selector to monitor all database resources in the cluster,
-or provide a specific set of labels to monitor a subset:
+This configuration enables your Kubernetes Service instance to connect to any
+Kubernetes clusters you register with your Teleport cluster.
+
+<Details title="Selectively watching Kubernetes clusters">
+
+You can configure a Kubernetes Service instance to watch for a subset of
+Kubernetes clusters by naming specific labels: 
+
+{/* TODO: How do multiple "labels" items work when each item includes multiple
+labels?*/}
 
 ```yaml
 resources:
 - labels:
     "env": "prod"
-    "engine": "postgres"
+    "region": "us-east-2"
 - labels:
     "env": "test"
-    "engine": "mysql"
 ```
 
-</TabItem>
-<TabItem label="Kubernetes Cluster">
+When you create dynamic Kubernetes cluster resources later in this guide, you
+can assign them labels to ensure that only specific Kubernetes Service instances
+will watch for them.
 
-{/* TODO: Instructions for adding a values file*/}
-
-</TabItem>
-</Tabs>
+</Details>
 
 ### Run the Teleport Kubernetes Service
 
-{/*TODO: Add tabbed instructions for running the binary or running "helm install"*/}
+On the host where you will run the Kubernetes Service, execute the following
+command:
+
+```code
+$ teleport start
+```
+
+{/* TODO: is this necessary now that we have systemd support?*/}
 
 ## Step 2/3. Authorize your user to access your Kubernetes cluster
 
@@ -163,7 +169,7 @@ $ tctl create -f database.yaml
 
 ### List Kubernetes cluster resources
 
-{/* TODO */}
+{/* TODO*/}
 
 ### Delete Kubernetes cluster resources
 
