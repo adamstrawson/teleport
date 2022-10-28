@@ -65,10 +65,8 @@ Kubernetes clusters you register with your Teleport cluster.
 <Details title="Selectively watching Kubernetes clusters">
 
 You can configure a Kubernetes Service instance to watch for a subset of
-Kubernetes clusters by naming specific labels: 
-
-{/* TODO: How do multiple "labels" items work when each item includes multiple
-labels?*/}
+Kubernetes clusters by naming specific labels with a configuration similar to
+the following:
 
 ```yaml
 resources:
@@ -77,7 +75,16 @@ resources:
     "region": "us-east-2"
 - labels:
     "env": "test"
+    "region": "us-west-1"
 ```
+
+For the Kubernetes Service to register a cluster, _any_ of the items in
+`resources` must match. For this to happen, _all_ of the `labels` entries within
+that item must match the cluster.
+
+For example, a cluster with `env:prod` and `region:us-east-1` would not match
+the configuration above, but a cluster with `env:test` and `region:us-west-1`
+would match.
 
 When you create dynamic Kubernetes cluster resources later in this guide, you
 can assign them labels to ensure that only specific Kubernetes Service instances
@@ -88,13 +95,21 @@ will watch for them.
 ### Run the Teleport Kubernetes Service
 
 On the host where you will run the Kubernetes Service, execute the following
-command:
+command, depending on whether you installed Teleport using a package manager or
+via a TAR archive:
 
+<Tabs>
+<TabItem label="Package Manager">
+
+```code
+sudo systemctl restart teleport
+```
+</TabItem>
+<TabItem label="TAR archive">
 ```code
 $ teleport start
 ```
-
-{/* TODO: is this necessary now that we have systemd support?*/}
+</TabItem>
 
 ## Step 2/3. Authorize your user to access your Kubernetes cluster
 
