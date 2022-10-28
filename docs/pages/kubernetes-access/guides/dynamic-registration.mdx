@@ -111,32 +111,36 @@ $ teleport start
 ```
 </TabItem>
 
-## Step 2/3. Authorize your user to access your Kubernetes cluster
+## Step 2/3. Authorize your user 
 
-{/*TODO: RBAC instructions*/}
+To enable dynamic Kubernetes cluster registration in Teleport, you will need to
+authorize your user to access the Kuberntes cluster you want to register with
+Teleport. You also need to authorize your user to create dynamic resources that
+represent Kubernetes clusters.  
 
-## Step 3/3. Manage dynamic Kubernetes cluster resources
+### Allow access to your Kubernetes cluster
+
+(!docs/pages/includes/kubernetes-access/rbac.mdx!)
 
 ### Authorize your user to manage Kubernetes clusters
 
-{/* TODO: edit for Kubernetes*/}
+To manage register Kubernetes clusters with Teleport, your user will need
+permissions to manage `kube_server` resources. In the previous section, you
+authorized your user to view access all Kubernetes clusters registered in your
+Teleport cluster. Now that you can view these clusters, create a role that
+enables you to manage them.
 
-The user creating the dynamic registration needs to have a role with access to the 
-database labels and the `db` resource.  In this example role the user can only
-create and maintain database services labeled `env: prod` and `engine: postgres`.
+Create a role definition called `kube-manager.yaml` with the following content: 
 
 ```yaml
 kind: role
 metadata:
-  name: dynamicregexample
+  name: kube-manager
 spec:
   allow:
-    db_labels:
-      engine: postgres
-      env: prod
     rules:
     - resources:
-      - db
+      - kube_server
       verbs:
       - list
       - create
@@ -145,6 +149,8 @@ spec:
       - delete
 version: v5
 ```
+
+## Step 3/3. Manage dynamic Kubernetes cluster resources
 
 ### Create a Kubernetes cluster resource
 
