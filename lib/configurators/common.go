@@ -14,7 +14,13 @@
 
 package configurators
 
-import "context"
+import (
+	"context"
+
+	"github.com/gravitational/teleport/lib/config"
+	"github.com/gravitational/teleport/lib/configurators/aws"
+	"github.com/gravitational/trace"
+)
 
 // BootstrapFlags flags provided by users to configure and define how the
 // configurators will work.
@@ -81,4 +87,28 @@ type Configurator interface {
 	Name() string
 	// IsEmpty defines if the configurator will have to perform any action.
 	IsEmpty() bool
+}
+
+// BuildConfigurators reads the configuration and returns a list of
+// configurators. Configurators that are "empty" are not returned.
+func BuildConfigurators(flags BootstrapFlags) ([]Configurator, error) {
+	fileConfig, err := config.ReadFromFile(flags.ConfigPath)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	aws, err := aws.NewAWSConfigurator(aws.ConfiguratorConfig{
+		Flags:      flags,
+		FileConfig: fileConfig,
+	})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	var configurators []Configurator
+	if !aws.IsEmpty() {
+		configurators = append(configurators, aws)
+	}
+
+	return configurators, nil
 }
