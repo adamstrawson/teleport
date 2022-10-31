@@ -699,13 +699,11 @@ lint-go:
 	golangci-lint run -c .golangci.yml --build-tags='$(LIBFIDO2_TEST_TAG) $(TOUCHID_TAG) $(PIV_TEST_TAG)' $(GO_LINT_FLAGS)
 
 .PHONY: fix-imports
-fix-imports: GOLANG_LINT_ARGS = --build-tags='$(LIBFIDO2_TEST_TAG) $(TOUCHID_TAG) $(PIV_TEST_TAG)' --fix
 fix-imports:
-	golangci-lint run -c .golangci.yml $(GOLANG_LINT_ARGS)
-	cd api/ && golangci-lint run -c ../.golangci.yml $(GOLANG_LINT_ARGS)
-	cd build.assets/tooling && golangci-lint run -c ../../.golangci.yml $(GOLANG_LINT_ARGS)
-	cd .cloudbuild/scripts && golangci-lint run -c ../../.golangci.yml $(GOLANG_LINT_ARGS)
-	cd assets/backport && golangci-lint run -c ../../.golangci.yml $(GOLANG_LINT_ARGS)
+ifeq (, $(shell which gci))
+ 	$(error "gci is not installed or it's missing from $$PATH, consider installing it 'go install github.com/daixiang0/gci@latest' or use 'make -C build.assets/ fix-imports'")
+endif
+	gci write -s 'standard,default,prefix(github.com/gravitational/teleport)' --skip-generated **/*.go
 
 .PHONY: lint-build-tooling
 lint-build-tooling: GO_LINT_FLAGS ?=
