@@ -32,6 +32,7 @@ import (
 	apievents "github.com/gravitational/teleport/api/types/events"
 	"github.com/gravitational/teleport/api/types/wrappers"
 	apiutils "github.com/gravitational/teleport/api/utils"
+	"github.com/gravitational/teleport/lib/auth/predicate"
 	"github.com/gravitational/teleport/lib/backend"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
@@ -4696,10 +4697,37 @@ func (a *ServerWithRoles) checkAccessToNode(node types.Server) error {
 		return nil
 	}
 
-	return a.context.Checker.CheckAccess(node,
+	standardRBAC := a.context.Checker.CheckAccess(node,
 		// MFA is not required for operations on node resources but
 		// will be enforced at the connection time.
 		services.AccessMFAParams{Verified: true})
+
+	if !trace.IsAccessDenied(standardRBAC) {
+		return trace.Wrap(standardRBAC)
+	}
+
+	predicateRBAC, err := a.context.PredicateChecker.CheckAccessToNode(&predicate.Node{
+		Namespace: node.GetNamespace(),
+		Labels:    node.GetAllLabels(),
+	}, &predicate.User{
+		Name: a.context.User.GetName(),
+		// TODO(joel): user->policy mapping discussion
+		Policies:  nil,
+		SSHLogins: a.context.User.GetLogins(),
+		Traits:    a.context.User.GetTraits(),
+	})
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	switch {
+	case !predicateRBAC && standardRBAC == nil:
+		return trace.AccessDenied("access denied to node %q", node.GetHostname())
+	case standardRBAC != nil:
+		return trace.Wrap(standardRBAC)
+	}
+
+	return nil
 }
 
 func (a *ServerWithRoles) checkAccessToDatabase(database types.Database) error {

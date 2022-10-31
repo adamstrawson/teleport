@@ -89,7 +89,13 @@ func NewPredicateAccessChecker(policies []types.Policy) *PredicateAccessChecker 
 	return &PredicateAccessChecker{policies}
 }
 
-// CheckAccessToNode checks if a given user has access to a Server Access node.
+// CheckLoginAccessToNode checks if a given user has login access to a Server Access node.
+func (c *PredicateAccessChecker) CheckLoginAccessToNode(node *Node, connection *Connection, user *User) (bool, error) {
+	env := buildEnv(node, connection, user)
+	return c.checkPolicyExprs("node", env)
+}
+
+// CheckAccessToNode checks if a given user has access to view a Server Access node.
 func (c *PredicateAccessChecker) CheckAccessToNode(node *Node, user *User) (bool, error) {
 	env := buildEnv(node, user)
 	return c.checkPolicyExprs("node", env)
@@ -148,8 +154,8 @@ func (c *PredicateAccessChecker) checkPolicyExprs(scope string, env map[string]a
 
 // Node describes a Server Access node.
 type Node struct {
-	// The UNIX login of the login request.
-	Login string `json:"login"`
+	// Namespace is the namespace of the node.
+	Namespace string
 
 	// The labels on the target node.
 	Labels map[string]string `json:"labels"`
@@ -160,10 +166,27 @@ func (n *Node) GetName() string {
 	return "node"
 }
 
+// The node connection information.
+type Connection struct {
+	// The UNIX login of the connection
+	Login string `json:"login"`
+}
+
+// GetName returns the name of the object.
+func (n *Connection) GetName() string {
+	return "connection"
+}
+
 // User describes a Teleport user.
 type User struct {
 	// The name of the Teleport user.
 	Name string `json:"name"`
+
+	// All access policies assigned to the user.
+	Policies []string `json:"policies"`
+
+	// SSH logins/principals assigned to the user.
+	SSHLogins []string `json:"logins"`
 
 	// The traits associated with the user.
 	Traits map[string][]string `json:"traits"`

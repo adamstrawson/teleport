@@ -100,35 +100,35 @@ func TestFnSanity(t *testing.T) {
 func TestCheckAccessToNode(t *testing.T) {
 	withNameAsLogin := types.NewPolicy("allow", types.AccessPolicySpecV1{
 		Allow: map[string]string{
-			"node": "(node.login == user.name) || (add(user.name, \"-admin\") == node.login)",
+			"node": "(connection.login == user.name) || (add(user.name, \"-admin\") == connection.login)",
 		},
 	})
 
 	denyMike := types.NewPolicy("allow", types.AccessPolicySpecV1{
 		Deny: map[string]string{
-			"node": "node.login == \"mike\"",
+			"node": "connection.login == \"mike\"",
 		},
 	})
 
 	checker := NewPredicateAccessChecker([]types.Policy{withNameAsLogin})
-	access, err := checker.CheckAccessToNode(&Node{Login: "mike"}, &User{Name: "mike"})
+	access, err := checker.CheckLoginAccessToNode(&Node{}, &Connection{Login: "mike"}, &User{Name: "mike"})
 	require.NoError(t, err)
 	require.True(t, access)
 
-	access, err = checker.CheckAccessToNode(&Node{Login: "alice"}, &User{Name: "bob"})
+	access, err = checker.CheckLoginAccessToNode(&Node{}, &Connection{Login: "alice"}, &User{Name: "bob"})
 	require.NoError(t, err)
 	require.False(t, access)
 
-	access, err = checker.CheckAccessToNode(&Node{Login: "bob-admin"}, &User{Name: "bob"})
+	access, err = checker.CheckLoginAccessToNode(&Node{}, &Connection{Login: "bob-admin"}, &User{Name: "bob"})
 	require.NoError(t, err)
 	require.True(t, access)
 
 	checkerWithDeny := NewPredicateAccessChecker([]types.Policy{withNameAsLogin, denyMike})
-	access, err = checkerWithDeny.CheckAccessToNode(&Node{Login: "mike"}, &User{Name: "mike"})
+	access, err = checkerWithDeny.CheckLoginAccessToNode(&Node{}, &Connection{Login: "mike"}, &User{Name: "mike"})
 	require.NoError(t, err)
 	require.False(t, access)
 
-	access, err = checkerWithDeny.CheckAccessToNode(&Node{Login: "bob"}, &User{Name: "bob"})
+	access, err = checkerWithDeny.CheckLoginAccessToNode(&Node{}, &Connection{Login: "bob"}, &User{Name: "bob"})
 	require.NoError(t, err)
 	require.True(t, access)
 }
