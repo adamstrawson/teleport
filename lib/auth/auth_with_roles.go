@@ -1237,24 +1237,11 @@ func (a *ServerWithRoles) ListResources(ctx context.Context, req proto.ListResou
 	req.SearchKeywords = nil
 	req.PredicateExpression = ""
 
-	resourceChecker, err := a.newResourceAccessChecker(req.ResourceType)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
 	var resp types.ListResourcesResponse
 	if err := a.authServer.IterateResources(ctx, req, func(resource types.ResourceWithLabels) error {
 		if len(resp.Resources) == limit {
 			resp.NextKey = backend.GetPaginationKey(resource)
 			return ErrDone
-		}
-
-		if err := resourceChecker.CanAccess(resource); err != nil {
-			if trace.IsAccessDenied(err) {
-				return nil
-			}
-
-			return trace.Wrap(err)
 		}
 
 		switch match, err := services.MatchResourceByFilters(resource, filter, nil /* ignore dup matches  */); {
