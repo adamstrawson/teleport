@@ -125,7 +125,7 @@ represent Kubernetes clusters.
 ### Authorize your user to manage Kubernetes clusters
 
 To manage register Kubernetes clusters with Teleport, your user will need
-permissions to manage `kube_server` resources. In the previous section, you
+permissions to manage `kube_cluster` resources. In the previous section, you
 authorized your user to view access all Kubernetes clusters registered in your
 Teleport cluster. Now that you can view these clusters, create a role that
 enables you to manage them.
@@ -140,7 +140,7 @@ spec:
   allow:
     rules:
     - resources:
-      - kube_server
+      - kube_cluster
       verbs:
       - list
       - create
@@ -152,55 +152,102 @@ version: v5
 
 ## Step 3/3. Manage dynamic Kubernetes cluster resources
 
+Now that your Teleport user has permissions to manage Kubernetes cluster
+resources, we will show you how to create, list, update, and delete them. 
+
 ### Create a Kubernetes cluster resource
 
-{/* TODO: Modify for Kubernetes*/}
-
-Next define a database resource:
+Next define a `kube_cluster` resource with the following content in a file
+called `kube_cluster.yaml`. This configures your Teleport cluster to forward
+Kubernetes API server traffic to the specified Kubernetes cluster:
 
 ```yaml
-kind: db
+kind: kube_cluster
 version: v3
 metadata:
-  name: example
-  description: "Example database"
-  labels:
-    env: prod
-    engine: postgres
+  name: mycluster
 spec:
-  protocol: "postgres"
-  uri: "localhost:5432"
+  kubeconfig: KUBECONFIG
 ```
 
-To create a database resource, run:
+{/* TODO: Add instructions for assigning the kubeconfig field*/}
+
+To create the `kube_cluster` resource, run the following command:
 
 ```code
-$ tctl create database.yaml
+$ tctl create kube_cluster.yaml
 ```
 
-After the resource has been created, it will appear among the list of available
-databases (in `tsh db ls` or UI) as long as at least one Database Service
-instance picks it up according to its label selectors.
+Instances of the Teleport Kubernetes Service watch for newly created or updated
+`kube_cluster` resources. When you create the `kube_cluster` resource any
+Kubernetes Service instances you ahve configured to track that cluster's labels
+will register that cluster and enable access to it via Teleport.
 
-To update an existing database resource, run:
+### Update a Kubernetes cluster resource
+
+To update the `kube_cluster` resource you created earlier, execute the following
+command to retrieve the resource as it exists on the Auth Service's backend:
 
 ```code
-$ tctl create -f database.yaml
+$ tctl get kube_clusters/mycluster > kube_cluster.yaml
 ```
+
+Edit the `kube_cluster.yaml` file to add a label to your `kube_cluster`:
+
+{/* TODO: Add fields assigned by the Auth Service to this example, such as the
+creation time*/}
+
+```diff
+  kind: kube_cluster
+  version: v3
+  metadata:
+    name: mycluster
+    labels:
++     env: test
+  spec:
+    kubeconfig: KUBECONFIG
+```
+
+Update the resource:
+
+```code
+$ tctl create -f kube_cluster.yaml
+```
+
+If the updated resource's labels no longer the ones a Teleport Kubernetes
+Service instance is configured to watch, the instance will unregister and stop
+proxying it.
 
 ### List Kubernetes cluster resources
 
-{/* TODO*/}
+You can list `kube_cluster` resources with the following command:
+
+```code
+$ tctl ls kube_clusters
+```
+
+{/* TODO: Show the output*/}
 
 ### Delete Kubernetes cluster resources
 
-{/* TODO: Edit the below for Kubernetes*/}
-
-If the updated resource's labels no longer match a particular database agent, it
-will unregister and stop proxying it.
-
-To delete a database resource, run:
+To delete the `kube_cluster` resource you created earlier, run the following
+command:
 
 ```code
-$ tctl rm db/example
+$ tctl rm kube_clusters/mycluster
 ```
+
+## Next steps
+
+In this guide, we showed you how to create a `kube_cluster` resource that
+contains a `kube_config` field, which uses a static configuration file to
+configure credentials for accessing resource. 
+
+You can also configure Teleport to discover your Kubernetes clusters
+automatically in AWS and Azure. Read our guides for configuring Kubernetes
+cluster Auto-Discovery:
+
+{/* TODO: update this when the guides are available */}
+
+- [AWS](#)
+- [Azure](#)
