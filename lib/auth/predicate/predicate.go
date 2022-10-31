@@ -186,7 +186,7 @@ type User struct {
 	Policies []string `json:"policies"`
 
 	// SSH logins/principals assigned to the user.
-	SSHLogins []string `json:"logins"`
+	SSHLogins []string `json:"ssh_logins"`
 
 	// The traits associated with the user.
 	Traits map[string][]string `json:"traits"`
