@@ -108,7 +108,8 @@ type Context struct {
 	// User is the username
 	User types.User
 	// Checker is access checker
-	Checker          services.AccessChecker
+	Checker services.AccessChecker
+	// PredicateChecker is a predicate-based access checker.
 	PredicateChecker *predicate.PredicateAccessChecker
 	// Identity holds the caller identity:
 	// 1. If caller is a user

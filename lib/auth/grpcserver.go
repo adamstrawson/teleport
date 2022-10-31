@@ -49,6 +49,7 @@ import (
 	"github.com/gravitational/teleport/api/types/installers"
 	"github.com/gravitational/teleport/api/types/wrappers"
 	"github.com/gravitational/teleport/api/utils/keys"
+	"github.com/gravitational/teleport/lib/auth/predicate"
 	wanlib "github.com/gravitational/teleport/lib/auth/webauthn"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/httplib"
@@ -4469,6 +4470,14 @@ func (g *GRPCServer) authenticate(ctx context.Context) (*grpcContext, error) {
 		}
 		return nil, trace.AccessDenied("[10] access denied")
 	}
+
+	// TODO(joel): get rid of this and merge predicate access checker in as a hidden subchecker of AccessChecker
+	policies, err := g.AuthServer.GetPolicies(ctx)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	authContext.PredicateChecker = predicate.NewPredicateAccessChecker(policies)
+
 	return &grpcContext{
 		Context: authContext,
 		ServerWithRoles: &ServerWithRoles{
