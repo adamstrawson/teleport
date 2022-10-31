@@ -700,9 +700,9 @@ lint-go:
 
 .PHONY: fix-imports
 fix-imports:
-ifeq (, $(shell which gci))
- 	$(error "gci is not installed or it's missing from $$PATH, consider installing it 'go install github.com/daixiang0/gci@latest' or use 'make -C build.assets/ fix-imports'")
-endif
+	ifeq (, $(shell which gci)) \
+ 		$(error "gci is not installed or it's missing from $$PATH, consider installing it 'go install github.com/daixiang0/gci@latest' or use 'make -C build.assets/ fix-imports'") \
+	endif
 	gci write -s 'standard,default,prefix(github.com/gravitational/teleport)' --skip-generated **/*.go
 
 .PHONY: lint-build-tooling
